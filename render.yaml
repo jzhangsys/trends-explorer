@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: trends-explorer
+    runtime: python
+    region: singapore
+    plan: free
+    rootDir: pytrends/examples/trend_app
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 120
+    envVars:
+      - key: SUPABASE_URL
+        value: https://shiqrelmuvzwcxqndnyq.supabase.co
+      - key: SUPABASE_KEY
+        sync: false   # 在 Render dashboard 手動填入，不 commit 到 git
+      - key: PYTHON_VERSION
+        value: "3.11.0"

@@ -1,0 +1,466 @@
+"""
+keyword_discovery.py
+====================
+動態高聲量關鍵字發現引擎
+
+功能：
+  1. 依應用場景（旅遊 / 健康 / 牙科 / 保健品）從種子關鍵字中選出聲量最高者
+  2. 對高聲量關鍵字擴展出高度相關的搜尋詞
+  3. 結果快取於 Supabase keyword_snapshots 表，TTL = 7 天
+
+使用範例：
+    from keyword_discovery import run_discovery
+    result = run_discovery("旅遊", geo="TW", top_n=5)
+    # result = {
+    #   "scenario": "旅遊",
+    #   "geo": "TW",
+    #   "top_keywords": [{"keyword": "...", "avg_score": 82.3}, ...],
+    #   "related_kws":  [{"keyword": "...", "source": "...", "type": "top|rising"}, ...],
+    #   "cached_at": "2026-02-23T04:00:00+00:00",
+    #   "from_cache": True/False,
+    # }
+
+Supabase 建表 SQL（第一次使用前請在 Supabase SQL Editor 執行）：
+    create table if not exists keyword_snapshots (
+      id            bigint generated always as identity primary key,
+      scenario      text        not null,
+      geo           text        not null default 'TW',
+      top_keywords  jsonb       not null,
+      related_kws   jsonb       not null,
+      created_at    timestamptz not null default now()
+    );
+    create index if not exists idx_kw_snap_lookup
+      on keyword_snapshots (scenario, geo, created_at desc);
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime, timezone, timedelta
+from typing import Optional
+
+import pandas as pd
+from pytrends.request import TrendReq
+from pytrends.exceptions import TooManyRequestsError
+from supabase import create_client, Client
+
+logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────
+# 場景種子關鍵字（可自行編輯或擴充場景）
+# ─────────────────────────────────────────────────────────────
+SCENARIO_SEEDS: dict[str, list[str]] = {
+    "旅遊": [
+        "旅遊",
+        "機票",
+        "訂房",
+        "背包客",
+        "出國",
+        "國內旅遊",
+        "民宿",
+        "旅行社",
+        "自由行",
+        "旅遊景點",
+    ],
+    "健康": [
+        "健康",
+        "養生",
+        "運動",
+        "睡眠",
+        "心理健康",
+        "飲食",
+        "減重",
+        "體重管理",
+        "免疫力",
+        "健檢",
+    ],
+    "牙科": [
+        "牙科",
+        "牙醫",
+        "矯正",
+        "植牙",
+        "洗牙",
+        "牙周病",
+        "蛀牙",
+        "假牙",
+        "牙齒美白",
+        "隱適美",
+    ],
+    "保健品": [
+        "保健品",
+        "維他命",
+        "益生菌",
+        "膠原蛋白",
+        "魚油",
+        "葉黃素",
+        "鈣片",
+        "保健食品",
+        "營養補充",
+        "抗氧化",
+    ],
+}
+
+# 快取有效期（天）
+CACHE_TTL_DAYS = 7
+
+# pytrends 限速等待（秒）
+RATE_LIMIT_SLEEP = 60
+MAX_RETRIES = 3
+
+# Google Trends 分析時間窗（發現高聲量關鍵字用）
+DISCOVERY_TIMEFRAME = "today 1-m"   # 近 4 週
+
+# 每次 build_payload 最多可放幾個關鍵字（Google Trends 上限 5）
+CHUNK_SIZE = 5
+
+
+# ─────────────────────────────────────────────────────────────
+# Supabase 連線（lazy singleton）
+# ─────────────────────────────────────────────────────────────
+SUPABASE_URL = "https://shiqrelmuvzwcxqndnyq.supabase.co"
+SUPABASE_KEY = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    ".eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNoaXFyZWxt"
+    "dXZ6d2N4cW5kbnlxIiwicm9sZSI6InNlcnZpY2Vfcm9sZ"
+    "SIsImlhdCI6MTczODMwNjk0MiwiZXhwIjoyMDUzODgyOTQyfQ"
+    ".xiA87hhy0tOTytDmSmy_pRqeqVSLtEBqsrTxrvLy0ec"
+)
+
+_sb_client: Optional[Client] = None
+
+
+def _get_supabase() -> Client:
+    global _sb_client
+    if _sb_client is None:
+        _sb_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("Supabase 連線建立（keyword_discovery）")
+    return _sb_client
+
+
+# ─────────────────────────────────────────────────────────────
+# pytrends 連線（lazy singleton）
+# ─────────────────────────────────────────────────────────────
+_pt_client: Optional[TrendReq] = None
+
+
+def _get_pytrends() -> TrendReq:
+    global _pt_client
+    if _pt_client is None:
+        _pt_client = TrendReq(
+            hl="zh-TW",
+            tz=-480,
+            timeout=(10, 30),
+            retries=2,
+            backoff_factor=1.5,
+        )
+        logger.info("TrendReq 初始化完成（keyword_discovery）")
+    return _pt_client
+
+
+def _safe_call(fn, *args, **kwargs):
+    """呼叫 pytrends API，遇到 429 限速則等待後重試。"""
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return fn(*args, **kwargs)
+        except TooManyRequestsError:
+            if attempt == MAX_RETRIES:
+                raise
+            logger.warning(
+                "Google 限速 (429)，第 %d/%d 次重試，等待 %ds …",
+                attempt, MAX_RETRIES, RATE_LIMIT_SLEEP,
+            )
+            time.sleep(RATE_LIMIT_SLEEP)
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 1：從種子關鍵字中選出高聲量關鍵字
+# ─────────────────────────────────────────────────────────────
+
+def discover_top_keywords(
+    scenario: str,
+    geo: str = "TW",
+    top_n: int = 5,
+) -> list[dict]:
+    """
+    將場景種子關鍵字分批送入 Google Trends interest_over_time，
+    計算近 4 週平均搜尋聲量，回傳聲量最高的 top_n 筆。
+
+    Returns:
+        [{"keyword": "旅遊", "avg_score": 82.3}, ...]  已按 avg_score 降序排列
+    """
+    seeds = SCENARIO_SEEDS.get(scenario)
+    if not seeds:
+        raise ValueError(f"未知場景：'{scenario}'，可用場景：{list(SCENARIO_SEEDS.keys())}")
+
+    pt = _get_pytrends()
+    scores: dict[str, float] = {}
+
+    # 每批最多 CHUNK_SIZE 個（Google Trends 限制）
+    chunks = [seeds[i: i + CHUNK_SIZE] for i in range(0, len(seeds), CHUNK_SIZE)]
+
+    for idx, chunk in enumerate(chunks):
+        logger.info("  [%s] 批次 %d/%d，關鍵字：%s", scenario, idx + 1, len(chunks), chunk)
+        try:
+            pt.build_payload(kw_list=chunk, timeframe=DISCOVERY_TIMEFRAME, geo=geo)
+            df: pd.DataFrame = _safe_call(pt.interest_over_time)
+
+            if df is not None and not df.empty:
+                if "isPartial" in df.columns:
+                    df = df.drop(columns=["isPartial"])
+                for kw in chunk:
+                    if kw in df.columns:
+                        scores[kw] = round(float(df[kw].mean()), 2)
+                    else:
+                        scores[kw] = 0.0
+            else:
+                for kw in chunk:
+                    scores[kw] = 0.0
+
+        except Exception as exc:
+            logger.warning("  批次 %s 失敗，略過：%s", chunk, exc)
+            for kw in chunk:
+                scores[kw] = 0.0
+
+        # 批次之間稍作停頓
+        if idx < len(chunks) - 1:
+            time.sleep(3)
+
+    # 排序並取 top_n
+    sorted_kws = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    result = [{"keyword": kw, "avg_score": score} for kw, score in sorted_kws]
+    logger.info("  [%s] Top %d 高聲量關鍵字：%s", scenario, top_n, result)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 2：擴展相關關鍵字
+# ─────────────────────────────────────────────────────────────
+
+def expand_related_keywords(
+    top_keywords: list[dict],
+    geo: str = "TW",
+    max_per_kw: int = 10,
+) -> list[dict]:
+    """
+    對每個高聲量關鍵字呼叫 related_queries，取 top + rising 各最多 max_per_kw 筆，
+    去重後回傳。
+
+    Returns:
+        [{"keyword": "便宜機票", "source": "機票", "type": "top", "value": 100}, ...]
+    """
+    pt = _get_pytrends()
+    seen: set[str] = set()
+    related: list[dict] = []
+
+    kw_list = [item["keyword"] for item in top_keywords]
+
+    # related_queries 每次最多 5 個關鍵字，這裡已假設 top_n ≤ 5
+    # 若 top_n > 5，分批處理
+    chunks = [kw_list[i: i + CHUNK_SIZE] for i in range(0, len(kw_list), CHUNK_SIZE)]
+
+    for idx, chunk in enumerate(chunks):
+        logger.info("  [related] 批次 %d/%d，關鍵字：%s", idx + 1, len(chunks), chunk)
+        try:
+            pt.build_payload(kw_list=chunk, timeframe=DISCOVERY_TIMEFRAME, geo=geo)
+            result: dict = _safe_call(pt.related_queries)
+
+            for kw in chunk:
+                kw_data = result.get(kw, {}) if result else {}
+
+                for qtype in ("top", "rising"):
+                    df = kw_data.get(qtype)
+                    if df is None or df.empty:
+                        continue
+                    df = df.head(max_per_kw)
+                    for _, row in df.iterrows():
+                        q = str(row.get("query", "")).strip()
+                        if q and q not in seen:
+                            seen.add(q)
+                            related.append({
+                                "keyword": q,
+                                "source": kw,
+                                "type": qtype,
+                                "value": int(row.get("value", 0)),
+                            })
+
+        except Exception as exc:
+            logger.warning("  related_queries 批次 %s 失敗：%s", chunk, exc)
+
+        if idx < len(chunks) - 1:
+            time.sleep(3)
+
+    logger.info("  相關關鍵字共 %d 筆（去重後）", len(related))
+    return related
+
+
+# ─────────────────────────────────────────────────────────────
+# 快取存取（Supabase）
+# ─────────────────────────────────────────────────────────────
+
+def _load_cache(scenario: str, geo: str) -> Optional[dict]:
+    """
+    若 Supabase 內有該場景的新鮮快照（< CACHE_TTL_DAYS 天），回傳之；否則 None。
+    """
+    try:
+        sb = _get_supabase()
+        ttl_cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=CACHE_TTL_DAYS)
+        ).isoformat()
+
+        resp = (
+            sb.table("keyword_snapshots")
+            .select("id, top_keywords, related_kws, created_at")
+            .eq("scenario", scenario)
+            .eq("geo", geo)
+            .gte("created_at", ttl_cutoff)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+
+        if resp.data:
+            row = resp.data[0]
+            logger.info(
+                "快取命中：場景=%s, geo=%s, 建立於 %s",
+                scenario, geo, row["created_at"],
+            )
+            return row
+        return None
+
+    except Exception as exc:
+        logger.warning("讀取 Supabase 快取失敗（將重新抓取）：%s", exc)
+        return None
+
+
+def _save_cache(
+    scenario: str,
+    geo: str,
+    top_keywords: list[dict],
+    related_kws: list[dict],
+) -> str:
+    """
+    將發現結果寫入 Supabase keyword_snapshots，回傳 created_at 時間字串。
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        sb = _get_supabase()
+        sb.table("keyword_snapshots").insert({
+            "scenario": scenario,
+            "geo": geo,
+            "top_keywords": top_keywords,
+            "related_kws": related_kws,
+            "created_at": now_iso,
+        }).execute()
+        logger.info("快取已儲存：場景=%s, geo=%s", scenario, geo)
+    except Exception as exc:
+        logger.warning("儲存 Supabase 快取失敗（不影響主功能）：%s", exc)
+    return now_iso
+
+
+# ─────────────────────────────────────────────────────────────
+# 主要對外 API
+# ─────────────────────────────────────────────────────────────
+
+def run_discovery(
+    scenario: str,
+    geo: str = "TW",
+    top_n: int = 5,
+    force_refresh: bool = False,
+) -> dict:
+    """
+    主要入口：發現特定場景的高聲量關鍵字及其相關關鍵字。
+
+    Args:
+        scenario:      場景名稱，須存在於 SCENARIO_SEEDS（旅遊 / 健康 / 牙科 / 保健品）
+        geo:           Google Trends 地區代碼（預設 TW）
+        top_n:         取幾個高聲量關鍵字（預設 5，最大建議 5 以符合 API 限制）
+        force_refresh: True 時忽略快取，強制重新從 Google Trends 抓取
+
+    Returns:
+        {
+          "scenario": str,
+          "geo": str,
+          "top_keywords":  [{"keyword": str, "avg_score": float}, ...],
+          "related_kws":   [{"keyword": str, "source": str, "type": str, "value": int}, ...],
+          "cached_at": str (ISO 8601),
+          "from_cache": bool,
+        }
+    """
+    if scenario not in SCENARIO_SEEDS:
+        raise ValueError(
+            f"未知場景：'{scenario}'，可用場景：{list(SCENARIO_SEEDS.keys())}"
+        )
+
+    # 1. 嘗試快取
+    if not force_refresh:
+        cached = _load_cache(scenario, geo)
+        if cached:
+            return {
+                "scenario": scenario,
+                "geo": geo,
+                "top_keywords": cached["top_keywords"],
+                "related_kws": cached["related_kws"],
+                "cached_at": cached["created_at"],
+                "from_cache": True,
+            }
+
+    logger.info("開始發現場景 [%s]（geo=%s, top_n=%d）…", scenario, geo, top_n)
+
+    # 2. 高聲量關鍵字發現
+    top_keywords = discover_top_keywords(scenario, geo=geo, top_n=top_n)
+
+    time.sleep(3)   # 避免連續呼叫觸發限速
+
+    # 3. 相關關鍵字擴展
+    related_kws = expand_related_keywords(top_keywords, geo=geo)
+
+    # 4. 寫入 Supabase 快取
+    cached_at = _save_cache(scenario, geo, top_keywords, related_kws)
+
+    return {
+        "scenario": scenario,
+        "geo": geo,
+        "top_keywords": top_keywords,
+        "related_kws": related_kws,
+        "cached_at": cached_at,
+        "from_cache": False,
+    }
+
+
+def list_scenarios() -> list[str]:
+    """回傳所有可用場景名稱。"""
+    return list(SCENARIO_SEEDS.keys())
+
+
+# ─────────────────────────────────────────────────────────────
+# CLI 快速測試
+# ─────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import json
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    import sys
+    scenario_arg = sys.argv[1] if len(sys.argv) > 1 else "旅遊"
+    force_arg = "--force" in sys.argv
+
+    print(f"\n{'='*55}")
+    print(f"  Keyword Discovery — 場景：{scenario_arg}")
+    print(f"{'='*55}\n")
+
+    r = run_discovery(scenario_arg, geo="TW", top_n=5, force_refresh=force_arg)
+
+    print(f"\n✅ 來源：{'快取' if r['from_cache'] else '即時抓取'}（{r['cached_at']}）")
+    print("\n📊 高聲量關鍵字：")
+    for i, kw in enumerate(r["top_keywords"], 1):
+        print(f"  {i}. {kw['keyword']:15s}  avg_score={kw['avg_score']}")
+
+    print(f"\n🔗 相關關鍵字（共 {len(r['related_kws'])} 筆）：")
+    for kw in r["related_kws"][:15]:
+        tag = "🔼" if kw["type"] == "rising" else "🔸"
+        print(f"  {tag} {kw['keyword']:20s}  來源={kw['source']}  值={kw['value']}")
+    if len(r["related_kws"]) > 15:
+        print(f"  … 還有 {len(r['related_kws'])-15} 筆")

@@ -1,0 +1,1493 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trends Explorer — Google 趨勢分析</title>
+  <meta name="description" content="即時查詢 Google 搜尋趨勢，比較關鍵字熱度、地區分佈與相關查詢。" />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+    rel="stylesheet" />
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+
+  <style>
+    /* ── Reset & Tokens ─────────────────────────────────────── */
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg: #080c14;
+      --surface: #0f1622;
+      --surface2: #161e30;
+      --border: rgba(255, 255, 255, 0.07);
+      --accent: #6366f1;
+      --accent2: #22d3ee;
+      --green: #10b981;
+      --amber: #f59e0b;
+      --rose: #f43f5e;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --radius: 16px;
+      --radius-sm: 10px;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Background glow ────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% -10%, rgba(99, 102, 241, 0.15) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 40% at 80% 110%, rgba(34, 211, 238, 0.1) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Layout ─────────────────────────────────────────────── */
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px 60px;
+    }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    header {
+      padding: 40px 0 32px;
+      text-align: center;
+    }
+
+    .logo-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(99, 102, 241, 0.12);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      border-radius: 99px;
+      padding: 6px 16px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #a5b4fc;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 20px;
+    }
+
+    .logo-badge::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent2);
+      box-shadow: 0 0 8px var(--accent2);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+
+      50% {
+        opacity: 0.5;
+        transform: scale(0.8);
+      }
+    }
+
+    h1 {
+      font-size: clamp(2rem, 5vw, 3.2rem);
+      font-weight: 800;
+      line-height: 1.15;
+      background: linear-gradient(135deg, #e2e8f0 0%, #a5b4fc 50%, #22d3ee 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 12px;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 1rem;
+      font-weight: 400;
+    }
+
+    /* ── Search Panel ───────────────────────────────────────── */
+    .search-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      margin-bottom: 28px;
+      backdrop-filter: blur(20px);
+    }
+
+    .search-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: flex-end;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+      min-width: 160px;
+    }
+
+    .field label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .field input,
+    .field select {
+      height: 46px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 14px;
+      padding: 0 14px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      width: 100%;
+    }
+
+    .field input:focus,
+    .field select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+    }
+
+    .field select option {
+      background: #1e293b;
+    }
+
+    .btn-search {
+      height: 46px;
+      padding: 0 28px;
+      background: linear-gradient(135deg, var(--accent), #818cf8);
+      border: none;
+      border-radius: var(--radius-sm);
+      color: #fff;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn-search:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 24px rgba(99, 102, 241, 0.4);
+    }
+
+    .btn-search:active {
+      transform: translateY(0);
+    }
+
+    .btn-search:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* suggestions dropdown */
+    .suggest-box {
+      position: relative;
+    }
+
+    #suggest-list {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      z-index: 100;
+      overflow: hidden;
+      display: none;
+    }
+
+    #suggest-list.show {
+      display: block;
+    }
+
+    .suggest-item {
+      padding: 10px 14px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      transition: background 0.15s;
+    }
+
+    .suggest-item:hover {
+      background: rgba(99, 102, 241, 0.15);
+    }
+
+    .suggest-item .s-title {
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .suggest-item .s-type {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    /* ── Status / Error ─────────────────────────────────────── */
+    .status-bar {
+      text-align: center;
+      padding: 12px;
+      font-size: 13px;
+      color: var(--muted);
+      display: none;
+    }
+
+    .status-bar.show {
+      display: block;
+    }
+
+    .status-bar.error {
+      color: var(--rose);
+    }
+
+    /* ── Loading spinner ────────────────────────────────────── */
+    .spinner {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    /* ── Grid Layout ────────────────────────────────────────── */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    @media (max-width: 768px) {
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* ── Card ───────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      transition: border-color 0.3s;
+    }
+
+    .card:hover {
+      border-color: rgba(99, 102, 241, 0.3);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-title .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+    }
+
+    /* ── Chart containers ───────────────────────────────────── */
+    .chart-wrap {
+      position: relative;
+      height: 260px;
+    }
+
+    /* ── Region bars ────────────────────────────────────────── */
+    .region-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .region-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .region-name {
+      width: 90px;
+      font-size: 13px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex-shrink: 0;
+    }
+
+    .region-bar-wrap {
+      flex: 1;
+      height: 8px;
+      background: var(--surface2);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    .region-bar {
+      height: 100%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .region-val {
+      width: 32px;
+      text-align: right;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent2);
+    }
+
+    /* ── Related Queries ────────────────────────────────────── */
+    .rq-tabs {
+      display: flex;
+      gap: 4px;
+      background: var(--surface2);
+      border-radius: var(--radius-sm);
+      padding: 4px;
+      margin-bottom: 16px;
+    }
+
+    .rq-tab {
+      flex: 1;
+      padding: 7px;
+      text-align: center;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--muted);
+      transition: background 0.2s, color 0.2s;
+    }
+
+    .rq-tab.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .rq-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .rq-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 9px 12px;
+      background: var(--surface2);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      transition: background 0.2s;
+    }
+
+    .rq-item:hover {
+      background: rgba(99, 102, 241, 0.12);
+    }
+
+    .rq-query {
+      color: var(--text);
+    }
+
+    .rq-val {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 99px;
+    }
+
+    .rq-val.top {
+      background: rgba(99, 102, 241, 0.2);
+      color: #a5b4fc;
+    }
+
+    .rq-val.rising {
+      background: rgba(16, 185, 129, 0.2);
+      color: #6ee7b7;
+    }
+
+    /* ── History ──────────────────────────────────────────────── */
+    .history-card {
+      margin-top: 20px;
+    }
+
+    .history-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .history-table th {
+      text-align: left;
+      padding: 8px 12px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .history-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      vertical-align: top;
+    }
+
+    .history-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .history-table tr:hover td {
+      background: rgba(99, 102, 241, 0.06);
+    }
+
+    .history-kw-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .history-kw {
+      padding: 2px 8px;
+      border-radius: 99px;
+      background: rgba(99, 102, 241, 0.18);
+      color: #a5b4fc;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .history-score {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .history-time {
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    /* ── Empty state ────────────────────────────────────────── */
+    .empty {
+      text-align: center;
+      padding: 40px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .empty svg {
+      margin-bottom: 12px;
+      opacity: 0.3;
+    }
+
+    /* ── Keyword chips ──────────────────────────────────────── */
+    .kw-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .kw-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      border-radius: 99px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .kw-chip .chip-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+    }
+
+    /* ── Discovery Panel ─────────────────────────────────────── */
+    .discovery-panel {
+      margin-top: 20px;
+      background: var(--surface);
+      border: 1px solid rgba(34, 211, 238, 0.2);
+      border-radius: var(--radius);
+      padding: 28px;
+      backdrop-filter: blur(20px);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .discovery-panel::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent2), var(--accent), transparent);
+    }
+
+    .discovery-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .discovery-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .discovery-title h3 {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .discovery-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 99px;
+      background: rgba(34, 211, 238, 0.15);
+      color: var(--accent2);
+      border: 1px solid rgba(34, 211, 238, 0.3);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .discovery-controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: flex-end;
+    }
+
+    .discovery-controls .field {
+      min-width: 130px;
+    }
+
+    .btn-discover {
+      height: 46px;
+      padding: 0 22px;
+      background: linear-gradient(135deg, var(--accent2), #0891b2);
+      border: none;
+      border-radius: var(--radius-sm);
+      color: #082f49;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn-discover:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 24px rgba(34, 211, 238, 0.35);
+    }
+
+    .btn-discover:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-refresh {
+      height: 46px;
+      padding: 0 16px;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: border-color 0.2s, color 0.2s;
+    }
+
+    .btn-refresh:hover {
+      border-color: var(--accent2);
+      color: var(--accent2);
+    }
+
+    .discovery-results {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-top: 20px;
+    }
+
+    @media (max-width: 768px) {
+      .discovery-results {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .discovery-col-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* Top keywords score bars */
+    .top-kw-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .top-kw-item {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .top-kw-label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .top-kw-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .top-kw-score {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent2);
+    }
+
+    .top-kw-bar-wrap {
+      height: 6px;
+      background: var(--surface2);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    .top-kw-bar {
+      height: 100%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, var(--accent2), var(--accent));
+      transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* Related keywords */
+    .related-kw-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .related-kw-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 10px;
+      background: var(--surface2);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      gap: 8px;
+      transition: background 0.2s;
+    }
+
+    .related-kw-item:hover {
+      background: rgba(34, 211, 238, 0.08);
+    }
+
+    .related-kw-name {
+      color: var(--text);
+      flex: 1;
+    }
+
+    .related-kw-source {
+      font-size: 10px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+
+    .related-kw-tag {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 99px;
+      flex-shrink: 0;
+    }
+
+    .related-kw-tag.top {
+      background: rgba(99, 102, 241, 0.2);
+      color: #a5b4fc;
+    }
+
+    .related-kw-tag.rising {
+      background: rgba(16, 185, 129, 0.2);
+      color: #6ee7b7;
+    }
+
+    .discovery-cache-info {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 14px;
+      text-align: right;
+    }
+
+    .discovery-cache-info .cache-hit {
+      color: var(--green);
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="container">
+
+    <!-- Header -->
+    <header>
+      <div class="logo-badge">即時趨勢分析</div>
+      <h1>Google Trends Explorer</h1>
+      <p class="subtitle">輸入關鍵字，即時探索搜尋趨勢、地區分佈與相關查詢</p>
+    </header>
+
+    <!-- Search Panel -->
+    <div class="search-panel">
+      <div class="search-row">
+
+        <!-- Keyword input with suggestions -->
+        <div class="field suggest-box" style="flex:2; min-width:240px;">
+          <label>關鍵字（最多 5 個，用逗號分隔）</label>
+          <input type="text" id="kw-input" placeholder="例：ChatGPT, Gemini, Claude" autocomplete="off" />
+          <div id="suggest-list"></div>
+        </div>
+
+        <!-- Region -->
+        <div class="field">
+          <label>地區</label>
+          <select id="geo-select">
+            <option value="TW">🇹🇼 台灣</option>
+            <option value="US">🇺🇸 美國</option>
+            <option value="JP">🇯🇵 日本</option>
+            <option value="KR">🇰🇷 韓國</option>
+            <option value="GB">🇬🇧 英國</option>
+            <option value="">🌍 全球</option>
+          </select>
+        </div>
+
+        <!-- Timeframe -->
+        <div class="field">
+          <label>時間範圍</label>
+          <select id="time-select">
+            <option value="now 7-d">過去 7 天</option>
+            <option value="today 1-m">過去 1 個月</option>
+            <option value="today 3-m" selected>過去 3 個月</option>
+            <option value="today 12-m">過去 12 個月</option>
+            <option value="today 5-y">過去 5 年</option>
+          </select>
+        </div>
+
+        <!-- Submit -->
+        <div class="field" style="flex:0 0 auto;">
+          <label style="visibility:hidden;">搜尋</label>
+          <button class="btn-search" id="search-btn" onclick="search()">
+            <span id="btn-icon">🔍</span>
+            <span id="btn-text">查詢趨勢</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Keyword chips -->
+      <div class="kw-chips" id="kw-chips"></div>
+
+      <!-- Status -->
+      <div class="status-bar" id="status-bar"></div>
+    </div>
+
+    <!-- Charts Grid -->
+    <div class="grid-2">
+
+      <!-- Interest Over Time -->
+      <div class="card" style="grid-column: 1 / -1;">
+        <div class="card-header">
+          <div class="card-title"><span class="dot"></span>搜尋熱度趨勢</div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="iot-chart"></canvas>
+          <div class="empty" id="iot-empty" style="display:none;">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M3 3v18h18" />
+              <path d="m19 9-5 5-4-4-3 3" />
+            </svg>
+            <div>查詢後，趨勢圖表將顯示於此</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Interest by Region -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title"><span class="dot"
+              style="background:var(--accent2);box-shadow:0 0 8px var(--accent2)"></span>地區分佈</div>
+        </div>
+        <div id="region-content">
+          <div class="empty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="12" cy="12" r="10" />
+              <path
+                d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>
+            <div>查詢後，地區分佈將顯示於此</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Related Queries -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title"><span class="dot"
+              style="background:var(--green);box-shadow:0 0 8px var(--green)"></span>相關查詢</div>
+        </div>
+        <div id="rq-content">
+          <div class="empty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.35-4.35" />
+            </svg>
+            <div>查詢後，相關搜尋詞將顯示於此</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- History Panel -->
+    <div class="card history-card">
+      <div class="card-header">
+        <div class="card-title"><span class="dot" style="background:#f59e0b;box-shadow:0 0 8px #f59e0b"></span>查詢歷史記錄
+        </div>
+        <button onclick="loadHistory()"
+          style="background:none;border:1px solid var(--border);border-radius:8px;padding:5px 12px;color:var(--muted);font-size:12px;cursor:pointer;">重新整理</button>
+      </div>
+      <div id="history-content">
+        <div class="empty">載入中…</div>
+      </div>
+    </div>
+
+    <!-- ── Keyword Discovery Panel ────────────────────────── -->
+    <div class="discovery-panel">
+
+      <div class="discovery-header">
+        <div class="discovery-title">
+          <span style="font-size:20px">🎯</span>
+          <h3>高聲量關鍵字發現</h3>
+          <span class="discovery-badge">每週動態更新</span>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="discovery-controls">
+        <div class="field">
+          <label>應用場景</label>
+          <select id="disc-scenario">
+            <option value="旅遊">✈️ 旅遊</option>
+            <option value="健康">💪 健康</option>
+            <option value="牙科">🦷 牙科</option>
+            <option value="保健品">💊 保健品</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>地區</label>
+          <select id="disc-geo">
+            <option value="TW">🇹🇼 台灣</option>
+            <option value="US">🇺🇸 美國</option>
+            <option value="JP">🇯🇵 日本</option>
+            <option value="">🌍 全球</option>
+          </select>
+        </div>
+        <div class="field" style="min-width:100px;max-width:140px;">
+          <label>高聲量取前 <span id="topn-label">5</span> 個</label>
+          <input type="range" id="disc-topn" min="1" max="5" value="5"
+            style="height:46px;padding:10px 4px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);width:100%;accent-color:var(--accent2);"
+            oninput="document.getElementById('topn-label').textContent=this.value">
+        </div>
+        <div class="field" style="flex:0 0 auto;">
+          <label style="visibility:hidden;">發現</label>
+          <button class="btn-discover" id="disc-btn" onclick="discoverKeywords(false)">
+            <span id="disc-btn-icon">🔍</span>
+            <span id="disc-btn-text">發現關鍵字</span>
+          </button>
+        </div>
+        <div class="field" style="flex:0 0 auto;">
+          <label style="visibility:hidden;">重取</label>
+          <button class="btn-refresh" id="disc-refresh-btn" onclick="discoverKeywords(true)"
+            title="忽略快取，強制重新從 Google Trends 抓取">
+            🔄 強制重新整理
+          </button>
+        </div>
+      </div>
+
+      <!-- Status -->
+      <div class="status-bar" id="disc-status"></div>
+
+      <!-- Results -->
+      <div class="discovery-results" id="disc-results" style="display:none;">
+        <!-- Col 1: Top Keywords -->
+        <div>
+          <div class="discovery-col-title">
+            <span style="color:var(--accent2)">📊</span> 高聲量關鍵字
+          </div>
+          <div class="top-kw-list" id="disc-top-kws"></div>
+        </div>
+        <!-- Col 2: Related Keywords -->
+        <div>
+          <div class="discovery-col-title">
+            <span style="color:var(--green)">🔗</span>
+            相關擴展關鍵字
+            <span id="disc-related-count" style="font-weight:400;color:var(--muted)"></span>
+          </div>
+          <div class="related-kw-list" id="disc-related-kws"></div>
+        </div>
+      </div>
+
+      <div class="discovery-cache-info" id="disc-cache-info" style="display:none;"></div>
+    </div>
+
+  </div>
+
+  <script>
+    // ── Chart instance ───────────────────────────────────────────
+    let iotChart = null;
+
+    const COLORS = ["#6366f1", "#22d3ee", "#f59e0b", "#10b981", "#f43f5e"];
+
+    // ── Suggestion debounce ──────────────────────────────────────
+    let suggestTimer = null;
+    const kwInput = document.getElementById('kw-input');
+    const suggestList = document.getElementById('suggest-list');
+
+    kwInput.addEventListener('input', () => {
+      clearTimeout(suggestTimer);
+      const val = kwInput.value.split(',').pop().trim();
+      if (val.length < 2) { hideSuggestions(); return; }
+      suggestTimer = setTimeout(() => fetchSuggestions(val), 400);
+    });
+
+    kwInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { hideSuggestions(); search(); }
+      if (e.key === 'Escape') hideSuggestions();
+    });
+
+    document.addEventListener('click', e => {
+      if (!e.target.closest('.suggest-box')) hideSuggestions();
+    });
+
+    async function fetchSuggestions(kw) {
+      try {
+        const res = await fetch(`/api/suggestions?kw=${encodeURIComponent(kw)}`);
+        const data = await res.json();
+        if (!Array.isArray(data) || data.length === 0) { hideSuggestions(); return; }
+        suggestList.innerHTML = data.map(s =>
+          `<div class="suggest-item" onclick="applySuggestion('${s.title.replace(/'/g, "\\'")}')">
+         <span class="s-title">${s.title}</span>
+         <span class="s-type">${s.type}</span>
+       </div>`
+        ).join('');
+        suggestList.classList.add('show');
+      } catch { hideSuggestions(); }
+    }
+
+    function applySuggestion(title) {
+      const parts = kwInput.value.split(',');
+      parts[parts.length - 1] = ' ' + title;
+      kwInput.value = parts.join(',').replace(/^\s,/, '').trim();
+      hideSuggestions();
+    }
+
+    function hideSuggestions() {
+      suggestList.classList.remove('show');
+    }
+
+    // ── Main Search ──────────────────────────────────────────────
+    async function search() {
+      const kw = kwInput.value.trim();
+      if (!kw) { setStatus('請輸入至少一個關鍵字', 'error'); return; }
+
+      const geo = document.getElementById('geo-select').value;
+      const timeframe = document.getElementById('time-select').value;
+      const kwList = kw.split(',').map(k => k.trim()).filter(Boolean).slice(0, 5);
+
+      setLoading(true);
+      setStatus('正在向 Google Trends 查詢中，請稍候…');
+      renderChips(kwList);
+      clearCharts();
+
+      try {
+        const params = new URLSearchParams({ kw: kwList.join(','), geo, timeframe });
+        const [iotRes, regionRes, rqRes] = await Promise.all([
+          fetch(`/api/interest-over-time?${params}`),
+          fetch(`/api/interest-by-region?${params}`),
+          fetch(`/api/related-queries?${params}`)
+        ]);
+
+        const [iotData, regionData, rqData] = await Promise.all([
+          iotRes.json(), regionRes.json(), rqRes.json()
+        ]);
+
+        if (iotData.error) throw new Error(iotData.error);
+
+        renderIOT(iotData);
+        renderRegion(regionData);
+        renderRelatedQueries(rqData, kwList[0]);
+        setStatus('');
+      } catch (e) {
+        setStatus('⚠️ 查詢失敗：' + e.message, 'error');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    // ── Render: Interest Over Time ───────────────────────────────
+    function renderIOT({ labels, datasets }) {
+      const canvas = document.getElementById('iot-chart');
+      const empty = document.getElementById('iot-empty');
+
+      if (!labels || labels.length === 0) {
+        canvas.style.display = 'none';
+        empty.style.display = 'block';
+        return;
+      }
+      canvas.style.display = 'block';
+      empty.style.display = 'none';
+
+      if (iotChart) iotChart.destroy();
+
+      iotChart = new Chart(canvas, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: datasets.map((ds, i) => ({
+            label: ds.label,
+            data: ds.data,
+            borderColor: COLORS[i],
+            backgroundColor: COLORS[i] + '18',
+            borderWidth: 2.5,
+            pointRadius: 0,
+            pointHoverRadius: 5,
+            tension: 0.4,
+            fill: true,
+          }))
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: {
+              labels: {
+                color: '#94a3b8',
+                boxWidth: 12,
+                boxHeight: 12,
+                borderRadius: 6,
+                font: { size: 12, family: 'Inter' }
+              }
+            },
+            tooltip: {
+              backgroundColor: '#0f1622',
+              borderColor: 'rgba(255,255,255,0.08)',
+              borderWidth: 1,
+              titleColor: '#e2e8f0',
+              bodyColor: '#94a3b8',
+              padding: 12,
+              cornerRadius: 10,
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(255,255,255,0.04)' },
+              ticks: {
+                color: '#475569',
+                font: { size: 11, family: 'Inter' },
+                maxTicksLimit: 10,
+              }
+            },
+            y: {
+              min: 0, max: 100,
+              grid: { color: 'rgba(255,255,255,0.04)' },
+              ticks: {
+                color: '#475569',
+                font: { size: 11, family: 'Inter' },
+              }
+            }
+          }
+        }
+      });
+    }
+
+    // ── Render: Region ───────────────────────────────────────────
+    function renderRegion({ regions, error }) {
+      const el = document.getElementById('region-content');
+      if (error || !regions || regions.length === 0) {
+        el.innerHTML = `<div class="empty"><div>無地區資料</div></div>`;
+        return;
+      }
+      const max = regions[0]?.value || 1;
+      el.innerHTML = `<div class="region-list">` + regions.map(r => `
+    <div class="region-item">
+      <span class="region-name" title="${r.name}">${r.name}</span>
+      <div class="region-bar-wrap">
+        <div class="region-bar" style="width:${(r.value / max * 100).toFixed(1)}%"></div>
+      </div>
+      <span class="region-val">${r.value}</span>
+    </div>
+  `).join('') + `</div>`;
+    }
+
+    // ── Render: Related Queries ──────────────────────────────────
+    function renderRelatedQueries(data, firstKw) {
+      const el = document.getElementById('rq-content');
+      const kd = data[firstKw];
+      if (!kd) { el.innerHTML = `<div class="empty"><div>無相關查詢資料</div></div>`; return; }
+
+      const top = kd.top || [];
+      const rising = kd.rising || [];
+
+      el.innerHTML = `
+    <div class="rq-tabs">
+      <div class="rq-tab active" id="tab-top" onclick="switchTab('top')">🔥 最熱門</div>
+      <div class="rq-tab" id="tab-rising" onclick="switchTab('rising')">📈 上升中</div>
+    </div>
+    <div id="rq-top" class="rq-list">
+      ${top.length ? top.map(q =>
+        `<div class="rq-item">
+          <span class="rq-query">${q.query}</span>
+          <span class="rq-val top">${q.value}</span>
+        </div>`).join('') : '<div class="empty" style="padding:20px 0">無資料</div>'}
+    </div>
+    <div id="rq-rising" class="rq-list" style="display:none">
+      ${rising.length ? rising.map(q =>
+          `<div class="rq-item">
+          <span class="rq-query">${q.query}</span>
+          <span class="rq-val rising">${q.value === 2147483647 ? '爆炸性上升' : '+' + q.value + '%'}</span>
+        </div>`).join('') : '<div class="empty" style="padding:20px 0">無資料</div>'}
+    </div>
+  `;
+    }
+
+    function switchTab(tab) {
+      document.getElementById('rq-top').style.display = tab === 'top' ? 'flex' : 'none';
+      document.getElementById('rq-rising').style.display = tab === 'rising' ? 'flex' : 'none';
+      document.getElementById('tab-top').classList.toggle('active', tab === 'top');
+      document.getElementById('tab-rising').classList.toggle('active', tab === 'rising');
+      document.getElementById('rq-top').style.flexDirection = 'column';
+      document.getElementById('rq-rising').style.flexDirection = 'column';
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────
+    function renderChips(kwList) {
+      const container = document.getElementById('kw-chips');
+      container.innerHTML = kwList.map((kw, i) => `
+    <div class="kw-chip" style="background:${COLORS[i]}22; color:${COLORS[i]}; border:1px solid ${COLORS[i]}44;">
+      <span class="chip-dot" style="background:${COLORS[i]}"></span>${kw}
+    </div>
+  `).join('');
+    }
+
+    function clearCharts() {
+      if (iotChart) { iotChart.destroy(); iotChart = null; }
+      document.getElementById('iot-chart').style.display = 'none';
+      document.getElementById('iot-empty').style.display = 'none';
+      document.getElementById('region-content').innerHTML =
+        `<div class="empty"><div>載入中…</div></div>`;
+      document.getElementById('rq-content').innerHTML =
+        `<div class="empty"><div>載入中…</div></div>`;
+    }
+
+    function setStatus(msg, type = '') {
+      const bar = document.getElementById('status-bar');
+      bar.textContent = msg;
+      bar.className = 'status-bar' + (msg ? ' show' : '') + (type ? ' ' + type : '');
+    }
+
+    function setLoading(on) {
+      const btn = document.getElementById('search-btn');
+      const icon = document.getElementById('btn-icon');
+      const txt = document.getElementById('btn-text');
+      btn.disabled = on;
+      if (on) {
+        icon.outerHTML = `<span class="spinner" id="btn-icon"></span>`;
+        txt.textContent = '查詢中…';
+      } else {
+        document.getElementById('btn-icon').outerHTML = `<span id="btn-icon">🔍</span>`;
+        txt.textContent = '查詢趨勢';
+      }
+    }
+
+    // ── History ──────────────────────────────────────────────────
+    async function loadHistory() {
+      const el = document.getElementById('history-content');
+      try {
+        const res = await fetch('/api/history');
+        const rows = await res.json();
+        if (!Array.isArray(rows) || rows.length === 0) {
+          el.innerHTML = `<div class="empty"><div>尚無查詢記錄</div></div>`;
+          return;
+        }
+        el.innerHTML = `
+      <table class="history-table">
+        <thead>
+          <tr>
+            <th>關鍵字</th>
+            <th>地區</th>
+            <th>時間範圍</th>
+            <th>平均熱度</th>
+            <th>查詢時間</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(r => {
+          const kws = Array.isArray(r.keywords) ? r.keywords : [];
+          const summary = r.result_summary || {};
+          const scores = Object.entries(summary)
+            .map(([k, v]) => `${k}: <b>${v}</b>`).join(' / ');
+          const dt = new Date(r.queried_at);
+          const timeStr = dt.toLocaleString('zh-TW', {
+            month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit'
+          });
+          return `<tr>
+              <td><div class="history-kw-list">${kws.map(k => `<span class="history-kw">${k}</span>`).join('')}</div></td>
+              <td>${r.geo || '全球'}</td>
+              <td>${r.timeframe || '-'}</td>
+              <td class="history-score">${scores || '-'}</td>
+              <td class="history-time">${timeStr}</td>
+            </tr>`;
+        }).join('')}
+        </tbody>
+      </table>
+    `;
+      } catch (e) {
+        el.innerHTML = `<div class="empty" style="color:var(--rose)">載入失敗：${e.message}</div>`;
+      }
+    }
+
+    // ── Auto-search on load ──────────────────────────────────────
+    window.addEventListener('DOMContentLoaded', () => {
+      kwInput.value = 'ChatGPT, Gemini, Claude';
+      loadHistory();
+      setTimeout(search, 300);
+    });
+
+    // 每次 search 完成後刷新歷史
+    const _origSearch = search;
+    search = async function () {
+      await _origSearch();
+      setTimeout(loadHistory, 800);
+    };
+
+    // ── Keyword Discovery ─────────────────────────────────────────
+    async function discoverKeywords(forceRefresh = false) {
+      const scenario = document.getElementById('disc-scenario').value;
+      const geo = document.getElementById('disc-geo').value;
+      const topN = document.getElementById('disc-topn').value;
+
+      setDiscLoading(true);
+      setDiscStatus(
+        forceRefresh
+          ? '🔄 重新從 Google Trends 抓取中，請稍候（約需 20-60 秒）…'
+          : '🔍 查詢中，若有快取將立即返回…'
+      );
+
+      document.getElementById('disc-results').style.display = 'none';
+      document.getElementById('disc-cache-info').style.display = 'none';
+
+      try {
+        const params = new URLSearchParams({
+          scenario,
+          geo,
+          top_n: topN,
+          force_refresh: forceRefresh ? 'true' : 'false',
+        });
+        const res = await fetch(`/api/keyword-discovery?${params}`);
+        const data = await res.json();
+
+        if (data.error) throw new Error(data.error);
+
+        renderDiscovery(data);
+        setDiscStatus('');
+      } catch (e) {
+        setDiscStatus('⚠️ 發現失敗：' + e.message, 'error');
+      } finally {
+        setDiscLoading(false);
+      }
+    }
+
+    function renderDiscovery(data) {
+      const topKws = data.top_keywords || [];
+      const related = data.related_kws || [];
+
+      // Top Keywords — score bars
+      const maxScore = topKws.reduce((m, k) => Math.max(m, k.avg_score), 1);
+      document.getElementById('disc-top-kws').innerHTML = topKws.map(k => {
+        const pct = Math.round((k.avg_score / maxScore) * 100);
+        return `
+          <div class="top-kw-item">
+            <div class="top-kw-label">
+              <span class="top-kw-name">${k.keyword}</span>
+              <span class="top-kw-score">${k.avg_score}</span>
+            </div>
+            <div class="top-kw-bar-wrap">
+              <div class="top-kw-bar" style="width:0%" data-pct="${pct}"></div>
+            </div>
+          </div>`;
+      }).join('');
+
+      // Animate bars after DOM paint
+      requestAnimationFrame(() => {
+        document.querySelectorAll('.top-kw-bar').forEach(bar => {
+          bar.style.width = bar.dataset.pct + '%';
+        });
+      });
+
+      // Related Keywords
+      const showRelated = related.slice(0, 20);
+      document.getElementById('disc-related-kws').innerHTML = showRelated.map(r => `
+        <div class="related-kw-item">
+          <span class="related-kw-name">${r.keyword}</span>
+          <span class="related-kw-source">← ${r.source}</span>
+          <span class="related-kw-tag ${r.type}">${r.type === 'rising' ? '📈 上升' : '🔥 熱門'}</span>
+        </div>
+      `).join('');
+
+      document.getElementById('disc-related-count').textContent =
+        `（共 ${related.length} 筆）`;
+
+      // Cache info
+      const cacheEl = document.getElementById('disc-cache-info');
+      const dt = new Date(data.cached_at);
+      const timeStr = dt.toLocaleString('zh-TW', {
+        month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit'
+      });
+      cacheEl.innerHTML = data.from_cache
+        ? `<span class="cache-hit">✅ 使用快取</span>（建立時間：${timeStr}，有效期 7 天）`
+        : `✨ 即時抓取完成，已快取至 ${timeStr}`;
+      cacheEl.style.display = 'block';
+
+      document.getElementById('disc-results').style.display = 'grid';
+    }
+
+    function setDiscStatus(msg, type = '') {
+      const bar = document.getElementById('disc-status');
+      bar.textContent = msg;
+      bar.className = 'status-bar' + (msg ? ' show' : '') + (type ? ' ' + type : '');
+    }
+
+    function setDiscLoading(on) {
+      const btn = document.getElementById('disc-btn');
+      const icon = document.getElementById('disc-btn-icon');
+      const txt = document.getElementById('disc-btn-text');
+      const refreshBtn = document.getElementById('disc-refresh-btn');
+      btn.disabled = on;
+      refreshBtn.disabled = on;
+      if (on) {
+        icon.textContent = '';
+        icon.innerHTML = '<span class="spinner"></span>';
+        txt.textContent = '發現中…';
+      } else {
+        icon.innerHTML = '🔍';
+        txt.textContent = '發現關鍵字';
+      }
+    }
+  </script>
+</body>
+
+</html>
