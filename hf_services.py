@@ -323,3 +323,142 @@ def summarize_trends(keywords: list[str], iot_data: dict, geo: str = "TW") -> st
 
     _cache_set(cache_key, summary)
     return summary
+
+
+# ─────────────────────────────────────────────────────────────
+# 5. 商業意圖評分 (Commercial Intent Scoring)
+# ─────────────────────────────────────────────────────────────
+
+def score_commercial_intent(keyword: str, scenario: str = "") -> dict:
+    """
+    用 LLM 評估關鍵字的商業意圖強度（付費轉換可能性）。
+
+    Returns:
+        {
+          "score": 8.5,           # 0-10，10=最強購買意圖
+          "motivation": "...",    # 主要購買動機
+          "price_range": "...",   # 預估消費金額區間
+          "urgency": "高/中/低",  # 決策急迫性
+          "keyword_type": "...",  # 交易型/資訊型/導航型
+        }
+    """
+    cache_key = f"intent:{keyword}:{scenario}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    scenario_hint = f"（場景：{scenario}）" if scenario else ""
+    system = "你是台灣數位行銷轉換率專家，請用繁體中文、JSON 格式回答。"
+    user = (
+        f"分析關鍵字「{keyword}」{scenario_hint} 的商業意圖。\n"
+        f"請輸出 JSON，格式：\n"
+        f'{{"score": 數字0到10, "motivation": "主要購買動機（30字內）", '
+        f'"price_range": "預估消費金額區間", "urgency": "高/中/低", '
+        f'"keyword_type": "交易型/資訊型/導航型"}}\n'
+        f"只輸出 JSON，不要其他說明。"
+    )
+
+    text = _hf_chat(system, user, max_tokens=120, timeout=35)
+    output = {
+        "score": 0.0, "motivation": "", "price_range": "",
+        "urgency": "", "keyword_type": "",
+    }
+    try:
+        if text:
+            start = text.find("{")
+            end   = text.rfind("}") + 1
+            if start != -1 and end > start:
+                parsed = json.loads(text[start:end])
+                output = {
+                    "score":        float(parsed.get("score", 0)),
+                    "motivation":   str(parsed.get("motivation", "")),
+                    "price_range":  str(parsed.get("price_range", "")),
+                    "urgency":      str(parsed.get("urgency", "")),
+                    "keyword_type": str(parsed.get("keyword_type", "")),
+                }
+    except Exception as exc:
+        logger.warning("score_commercial_intent parse error: %s | text: %s", exc, text[:200])
+
+    _cache_set(cache_key, output)
+    return output
+
+
+# ─────────────────────────────────────────────────────────────
+# 6. 平台歸因分析 (Platform Attribution)
+# ─────────────────────────────────────────────────────────────
+
+# 場景先驗分布（先驗知識，LLM 輸出疊加此修正）
+_SCENARIO_PLATFORM_PRIOR: dict[str, dict[str, float]] = {
+    "旅遊":  {"Google搜尋": 8, "Instagram": 8, "YouTube": 7, "Facebook": 6, "官網": 5, "TikTok": 6},
+    "健康":  {"Google搜尋": 9, "YouTube": 7,   "官網": 7,   "Facebook": 6, "Instagram": 5, "TikTok": 4},
+    "牙科":  {"Google搜尋": 9, "官網": 8,       "Facebook": 6, "Instagram": 5, "YouTube": 5, "TikTok": 3},
+    "保健品": {"Instagram": 8, "Facebook": 7,  "TikTok": 7, "Google搜尋": 7, "YouTube": 6, "官網": 5},
+}
+_DEFAULT_PRIOR = {"Google搜尋": 7, "Facebook": 6, "Instagram": 6, "YouTube": 5, "官網": 5, "TikTok": 5}
+
+
+def analyze_platform_attribution(keyword: str, scenario: str = "") -> dict:
+    """
+    推估關鍵字在各平台/通路的曝光比重。
+
+    Returns:
+        {
+          "top_platform": "Google搜尋",
+          "platforms": [
+            {"name": "Google搜尋", "score": 9, "reason": "..."},
+            ...
+          ]
+        }
+    """
+    cache_key = f"platform:{keyword}:{scenario}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    # 先驗分數
+    prior = _SCENARIO_PLATFORM_PRIOR.get(scenario, _DEFAULT_PRIOR).copy()
+
+    scenario_hint = f"（場景：{scenario}）" if scenario else ""
+    system = "你是台灣社群媒體行銷專家，請用繁體中文、JSON 格式回答。"
+    user = (
+        f"關鍵字「{keyword}」{scenario_hint}，台灣用戶主要在哪些平台看到或搜尋這個關鍵字？\n"
+        f"請評估以下平台（0-10分）並說明原因：Google搜尋、官網、Instagram、Facebook、TikTok、YouTube。\n"
+        f"輸出 JSON 格式：\n"
+        f'{{"Google搜尋": 數字, "官網": 數字, "Instagram": 數字, '
+        f'"Facebook": 數字, "TikTok": 數字, "YouTube": 數字, '
+        f'"reasons": {{"Google搜尋": "原因", "Instagram": "原因", "TikTok": "原因"}}}}\n'
+        f"只輸出 JSON。"
+    )
+
+    text = _hf_chat(system, user, max_tokens=200, timeout=35)
+
+    # 嘗試解析 LLM 輸出，失敗時用先驗分數
+    ai_scores: dict[str, float] = {}
+    ai_reasons: dict[str, str] = {}
+    try:
+        if text:
+            start = text.find("{")
+            end   = text.rfind("}") + 1
+            if start != -1 and end > start:
+                parsed = json.loads(text[start:end])
+                ai_reasons = parsed.pop("reasons", {})
+                ai_scores  = {k: float(v) for k, v in parsed.items() if isinstance(v, (int, float))}
+    except Exception as exc:
+        logger.warning("analyze_platform_attribution parse error: %s", exc)
+
+    # 混合先驗 + LLM（加權平均：0.4 先驗 + 0.6 LLM）
+    platforms_raw = []
+    for name, prior_score in prior.items():
+        ai_s   = ai_scores.get(name, prior_score)
+        final  = round(prior_score * 0.4 + ai_s * 0.6, 1)
+        reason = ai_reasons.get(name, "")
+        platforms_raw.append({"name": name, "score": final, "reason": reason})
+
+    platforms_sorted = sorted(platforms_raw, key=lambda x: x["score"], reverse=True)
+    output = {
+        "top_platform": platforms_sorted[0]["name"] if platforms_sorted else "",
+        "platforms":    platforms_sorted,
+    }
+
+    _cache_set(cache_key, output)
+    return output

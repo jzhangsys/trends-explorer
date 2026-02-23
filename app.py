@@ -22,7 +22,10 @@ from hf_services import (
     classify_keyword_scenario,
     semantic_keyword_search,
     summarize_trends,
+    score_commercial_intent,
+    analyze_platform_attribution,
 )
+from news_service import fetch_keyword_news
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -357,6 +360,56 @@ def trend_summary():
         return jsonify({"summary": summary})
     except Exception as e:
         logger.error("trend-summary error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: 關鍵字新跡 ──────────────────────────────────
+@app.route("/api/keyword-news")
+def keyword_news():
+    """GNews API 取得關鍵字相關新跡。"""
+    keyword = request.args.get("keyword", "").strip()
+    if not keyword:
+        return jsonify({"error": "請提供 keyword"}), 400
+    scenario  = request.args.get("scenario", "")
+    max_n     = min(int(request.args.get("max", 5)), 10)
+    lang      = request.args.get("lang", "zh-Hant")
+    try:
+        news = fetch_keyword_news(keyword, scenario=scenario, lang=lang, max_results=max_n)
+        return jsonify({"keyword": keyword, "news": news, "total": len(news)})
+    except Exception as e:
+        logger.error("keyword-news error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: 商業意圖評分 ──────────────────────────────
+@app.route("/api/commercial-intent")
+def commercial_intent():
+    """LLM 評估關鍵字商業轉換意圖。"""
+    keyword = request.args.get("keyword", "").strip()
+    if not keyword:
+        return jsonify({"error": "請提供 keyword"}), 400
+    scenario = request.args.get("scenario", "")
+    try:
+        result = score_commercial_intent(keyword, scenario)
+        return jsonify(result)
+    except Exception as e:
+        logger.error("commercial-intent error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: 平台歸因分析 ───────────────────────────────
+@app.route("/api/platform-attribution")
+def platform_attribution():
+    """LLM 推估關鍵字在各通路/平台的曝光比重。"""
+    keyword = request.args.get("keyword", "").strip()
+    if not keyword:
+        return jsonify({"error": "請提供 keyword"}), 400
+    scenario = request.args.get("scenario", "")
+    try:
+        result = analyze_platform_attribution(keyword, scenario)
+        return jsonify(result)
+    except Exception as e:
+        logger.error("platform-attribution error: %s", e)
         return jsonify({"error": str(e)}), 500
 
 

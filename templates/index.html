@@ -1476,20 +1476,28 @@
         return `<div class="service-tags">${tags}</div>`;
       }
 
-      // Top Keywords — score bars + service tags
+      // Top Keywords — score bars + service tags + 深度分析按鈕
       const maxScore = topKws.reduce((m, k) => Math.max(m, k.avg_score), 1);
-      document.getElementById('disc-top-kws').innerHTML = topKws.map(k => {
+      const scenario = document.getElementById('disc-scenario')?.value || '';
+      document.getElementById('disc-top-kws').innerHTML = topKws.map((k, idx) => {
         const pct = Math.round((k.avg_score / maxScore) * 100);
+        const safeId = `kw-${idx}`;
         return `
           <div class="top-kw-item">
             <div class="top-kw-label">
               <span class="top-kw-name">${k.keyword}</span>
               <span class="top-kw-score">${k.avg_score}</span>
+              <button onclick="toggleDeepAnalysis('${safeId}','${k.keyword.replace(/'/g, "\\'")}','${scenario}')"
+                style="margin-left:auto;padding:2px 10px;border-radius:99px;border:1px solid rgba(139,92,246,0.35);background:rgba(139,92,246,0.1);color:#c4b5fd;font-size:10px;cursor:pointer;">
+                🔍 深度分析
+              </button>
             </div>
             <div class="top-kw-bar-wrap">
               <div class="top-kw-bar" style="width:0%" data-pct="${pct}"></div>
             </div>
             ${serviceTagsHTML(k.services)}
+            <!-- 深度分析展開面板 -->
+            <div id="deep-${safeId}" style="display:none;margin-top:10px;border-top:1px solid rgba(255,255,255,0.08);padding-top:10px;"></div>
           </div>`;
       }).join('');
 
@@ -1667,6 +1675,103 @@
         }, 500);
       }
     };
+
+    // ── 深度分析：Toggle 展開/收合 ──────────────────────────
+    const _deepLoaded = new Set();
+    function toggleDeepAnalysis(safeId, keyword, scenario) {
+      const panel = document.getElementById(`deep-${safeId}`);
+      if (!panel) return;
+      if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        if (!_deepLoaded.has(safeId)) {
+          _deepLoaded.add(safeId);
+          loadKeywordDeepAnalysis(safeId, keyword, scenario);
+        }
+      } else {
+        panel.style.display = 'none';
+      }
+    }
+
+    async function loadKeywordDeepAnalysis(safeId, keyword, scenario) {
+      const panel = document.getElementById(`deep-${safeId}`);
+      panel.innerHTML = `
+        <div style="color:var(--muted);font-size:12px;padding:8px 0;">⏳ AI 深度分析中（新聞 + 商業意圖 + 平台歸因）…</div>`;
+
+      // 並行呼叫 3 個 API
+      const params = new URLSearchParams({ keyword, scenario });
+      const [newsRes, intentRes, platformRes] = await Promise.allSettled([
+        fetch(`/api/keyword-news?${params}&max=4`).then(r => r.json()),
+        fetch(`/api/commercial-intent?${params}`).then(r => r.json()),
+        fetch(`/api/platform-attribution?${params}`).then(r => r.json()),
+      ]);
+
+      const newsList = newsRes.status === 'fulfilled' ? (newsRes.value.news || []) : [];
+      const intentData = intentRes.status === 'fulfilled' ? intentRes.value : {};
+      const platformData = platformRes.status === 'fulfilled' ? platformRes.value : {};
+
+      panel.innerHTML = `
+        ${renderNewsPanel(newsList)}
+        ${renderIntentPanel(intentData)}
+        ${renderPlatformPanel(platformData)}`;
+    }
+
+    function renderNewsPanel(news) {
+      if (!news.length) return `<div style="font-size:11px;color:var(--muted);margin-bottom:10px;">📰 暫無相關新聞</div>`;
+      return `
+        <div style="margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:6px;">📰 最新相關新聞</div>
+          ${news.map(n => `
+            <a href="${n.url}" target="_blank" rel="noopener" style="display:block;padding:6px 8px;margin-bottom:4px;background:rgba(255,255,255,0.04);border-radius:8px;text-decoration:none;border-left:2px solid rgba(139,92,246,0.4);">
+              <div style="font-size:12px;color:var(--text);line-height:1.4;">${n.title}</div>
+              <div style="font-size:10px;color:var(--muted);margin-top:2px;">${n.source || ''}${n.published_at ? ' · ' + n.published_at.slice(0, 10) : ''}</div>
+            </a>`).join('')}
+        </div>`;
+    }
+
+    function renderIntentPanel(data) {
+      if (!data.score && data.score !== 0) return '';
+      const score = data.score || 0;
+      const urgencyColor = { 高: '#f87171', 中: '#fbbf24', 低: '#6ee7b7' }[data.urgency] || '#c4b5fd';
+      const typeIcon = { 交易型: '🛒', 資訊型: '📖', 導航型: '🧭' }[data.keyword_type] || '💡';
+      return `
+        <div style="margin-bottom:12px;padding:10px;background:rgba(251,191,36,0.06);border-radius:10px;border:1px solid rgba(251,191,36,0.15);">
+          <div style="font-size:11px;font-weight:600;color:#fbbf24;margin-bottom:8px;">💰 商業意圖評分</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <div style="flex:1;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;">
+              <div style="width:${score * 10}%;height:100%;background:linear-gradient(90deg,#fbbf24,#f87171);border-radius:3px;"></div>
+            </div>
+            <span style="font-size:14px;font-weight:700;color:#fbbf24;">${score.toFixed(1)}</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;font-size:11px;">
+            ${data.keyword_type ? `<span style="background:rgba(255,255,255,0.08);padding:2px 8px;border-radius:99px;">${typeIcon} ${data.keyword_type}</span>` : ''}
+            ${data.urgency ? `<span style="color:${urgencyColor};background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:99px;">⚡ 急迫性：${data.urgency}</span>` : ''}
+            ${data.price_range ? `<span style="color:var(--text-secondary);padding:2px 8px;">💵 ${data.price_range}</span>` : ''}
+          </div>
+          ${data.motivation ? `<div style="font-size:11px;color:var(--text-secondary);margin-top:6px;">📌 ${data.motivation}</div>` : ''}
+        </div>`;
+    }
+
+    function renderPlatformPanel(data) {
+      const platforms = data.platforms || [];
+      if (!platforms.length) return '';
+      const icons = {
+        'Google搜尋': '🔍', '官網': '🌐', 'Instagram': '📸',
+        'Facebook': '👥', 'TikTok': '🎵', 'YouTube': '▶️'
+      };
+      return `
+        <div style="margin-bottom:4px;">
+          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:8px;">📱 平台曝光歸因</div>
+          ${platforms.slice(0, 6).map(p => `
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+              <span style="font-size:11px;width:80px;color:var(--text-secondary);flex-shrink:0;">${icons[p.name] || '📌'} ${p.name}</span>
+              <div style="flex:1;height:4px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;">
+                <div style="width:${p.score * 10}%;height:100%;background:linear-gradient(90deg,#8b5cf6,#06b6d4);border-radius:2px;"></div>
+              </div>
+              <span style="font-size:10px;color:var(--muted);width:24px;text-align:right;">${p.score}</span>
+            </div>`).join('')}
+          ${data.top_platform ? `<div style="font-size:10px;color:var(--muted);margin-top:4px;">🏆 最主要管道：<strong style="color:var(--text-secondary)">${data.top_platform}</strong></div>` : ''}
+        </div>`;
+    }
   </script>
 </body>
 
