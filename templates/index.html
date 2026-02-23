@@ -1257,10 +1257,11 @@
           `<div class="rq-item">
           <span class="rq-query">${q.query}</span>
           <span class="rq-val rising">${q.value === 2147483647 ? '爆炸性上升' : '+' + q.value + '%'}</span>
-        </div>`).join('') : '<div class="empty" style="padding:20px 0">無資料</div>'}
+        </div>`).join('') : '<div class="empty" style="padding:24px 0;text-align:center"><div style="font-size:1.6rem;margin-bottom:8px">📊</div><div style="color:var(--text-secondary);font-size:0.85rem">此時段無明顯上升趨勢<br>可嘗試換不同關鍵字或時間範圍</div></div>'}
     </div>
   `;
     }
+
 
     function switchTab(tab) {
       document.getElementById('rq-top').style.display = tab === 'top' ? 'flex' : 'none';

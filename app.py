@@ -168,24 +168,43 @@ def related_queries():
 
         output = {}
         for kw in kw_list:
-            kw_data = result.get(kw, {})
+            kw_data = result.get(kw, {}) if result else {}
             top_df = kw_data.get("top")
             rising_df = kw_data.get("rising")
+
             output[kw] = {
                 "top": (
-                    top_df[["query", "value"]].head(8).to_dict(orient="records")
+                    top_df[["query", "value"]].head(10).to_dict(orient="records")
                     if top_df is not None and not top_df.empty else []
                 ),
                 "rising": (
-                    rising_df[["query", "value"]].head(8).to_dict(orient="records")
+                    rising_df[["query", "value"]].head(15).to_dict(orient="records")
                     if rising_df is not None and not rising_df.empty else []
                 ),
             }
+
+        # 若所有關鍵字的 rising 都為空，嘗試用較短時間窗重新抓取
+        all_rising_empty = all(len(v["rising"]) == 0 for v in output.values())
+        if all_rising_empty and timeframe != "now 7-d":
+            logger.info("rising 全空，改用 now 7-d 重新抓取…")
+            time.sleep(2)
+            pt.build_payload(kw_list=kw_list, timeframe="now 7-d", geo=geo)
+            result2 = safe_call(pt.related_queries)
+            if result2:
+                for kw in kw_list:
+                    kw_data2 = result2.get(kw, {})
+                    rising_df2 = kw_data2.get("rising")
+                    if rising_df2 is not None and not rising_df2.empty:
+                        output[kw]["rising"] = (
+                            rising_df2[["query", "value"]].head(15).to_dict(orient="records")
+                        )
+
         return jsonify(output)
 
     except Exception as e:
         logger.error("related-queries error: %s", e)
         return jsonify({"error": str(e)}), 500
+
 
 
 # ── API: Keyword Suggestions ──────────────────────────────────
