@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # 設定
 # ─────────────────────────────────────────────────────────────
 HF_TOKEN: str = os.environ.get("HF_TOKEN", "")
-HF_API_BASE = "https://api-inference.huggingface.co/models"
+HF_API_BASE = "https://router.huggingface.co/hf-inference/models"
 
 MODELS = {
     "llm":        "Qwen/Qwen2.5-72B-Instruct",
