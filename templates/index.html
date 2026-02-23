@@ -815,6 +815,37 @@
       color: #6ee7b7;
     }
 
+    /* 服務/商品標籤 */
+    .service-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 5px;
+    }
+
+    .service-tag {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 99px;
+      background: rgba(251, 191, 36, 0.15);
+      color: #fcd34d;
+      border: 1px solid rgba(251, 191, 36, 0.25);
+      white-space: nowrap;
+    }
+
+    .service-tag.primary {
+      background: rgba(251, 146, 60, 0.2);
+      color: #fb923c;
+      border-color: rgba(251, 146, 60, 0.35);
+      font-weight: 700;
+    }
+
+    .top-kw-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
     .discovery-cache-info {
       font-size: 11px;
       color: var(--muted);
@@ -1415,7 +1446,16 @@
       const topKws = data.top_keywords || [];
       const related = data.related_kws || [];
 
-      // Top Keywords — score bars
+      // 服務標籤 helper
+      function serviceTagsHTML(services) {
+        if (!services || services.length === 0) return '';
+        const tags = services.map((s, i) =>
+          `<span class="service-tag${i === 0 ? ' primary' : ''}">🛍 ${s}</span>`
+        ).join('');
+        return `<div class="service-tags">${tags}</div>`;
+      }
+
+      // Top Keywords — score bars + service tags
       const maxScore = topKws.reduce((m, k) => Math.max(m, k.avg_score), 1);
       document.getElementById('disc-top-kws').innerHTML = topKws.map(k => {
         const pct = Math.round((k.avg_score / maxScore) * 100);
@@ -1428,6 +1468,7 @@
             <div class="top-kw-bar-wrap">
               <div class="top-kw-bar" style="width:0%" data-pct="${pct}"></div>
             </div>
+            ${serviceTagsHTML(k.services)}
           </div>`;
       }).join('');
 
@@ -1438,13 +1479,16 @@
         });
       });
 
-      // Related Keywords
+      // Related Keywords + service tags
       const showRelated = related.slice(0, 20);
       document.getElementById('disc-related-kws').innerHTML = showRelated.map(r => `
-        <div class="related-kw-item">
-          <span class="related-kw-name">${r.keyword}</span>
-          <span class="related-kw-source">← ${r.source}</span>
-          <span class="related-kw-tag ${r.type}">${r.type === 'rising' ? '📈 上升' : '🔥 熱門'}</span>
+        <div class="related-kw-item" style="flex-direction:column;align-items:flex-start;gap:4px;">
+          <div style="display:flex;align-items:center;gap:6px;width:100%;">
+            <span class="related-kw-name">${r.keyword}</span>
+            <span class="related-kw-source">← ${r.source}</span>
+            <span class="related-kw-tag ${r.type}">${r.type === 'rising' ? '📈 上升' : '🔥 熱門'}</span>
+          </div>
+          ${serviceTagsHTML(r.services)}
         </div>
       `).join('');
 
