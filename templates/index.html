@@ -941,6 +941,17 @@
             <div>查詢後，趨勢圖表將顯示於此</div>
           </div>
         </div>
+        <!-- AI 趨勢洞察 -->
+        <div id="ai-insight-wrap" style="display:none;margin-top:16px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <span style="font-size:14px;font-weight:600;color:var(--text-secondary);">✨ AI 趨勢洞察</span>
+            <span id="ai-insight-badge"
+              style="font-size:10px;padding:2px 8px;border-radius:99px;background:rgba(139,92,246,0.2);color:#c4b5fd;">Qwen2.5</span>
+          </div>
+          <div id="ai-insight-text"
+            style="font-size:13px;line-height:1.8;color:var(--text-secondary);padding:12px 16px;background:rgba(139,92,246,0.07);border-radius:12px;border-left:3px solid rgba(139,92,246,0.4);">
+            載入中…</div>
+        </div>
       </div>
 
       <!-- Interest by Region -->
@@ -1002,6 +1013,16 @@
           <h3>高聲量關鍵字發現</h3>
           <span class="discovery-badge">每週動態更新</span>
         </div>
+        <!-- 語意搜尋 -->
+        <div style="display:flex;gap:8px;align-items:center;margin-top:10px;">
+          <input type="text" id="semantic-query" placeholder="🔬 語意搜尋關鍵字（例：牙齒矯正費用）"
+            style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:13px;"
+            onkeydown="if(event.key==='Enter')semanticSearch()" />
+          <button onclick="semanticSearch()"
+            style="padding:8px 14px;border-radius:8px;border:none;background:rgba(139,92,246,0.25);color:#c4b5fd;cursor:pointer;font-size:12px;white-space:nowrap;">🔬
+            語意搜尋</button>
+        </div>
+        <div id="semantic-results" style="display:none;margin-top:8px;"></div>
       </div>
 
       <!-- Controls -->
@@ -1532,6 +1553,120 @@
         txt.textContent = '發現關鍵字';
       }
     }
+
+    // ── HF AI Feature 1: 趨勢洞察摘要 ────────────────────────
+    async function loadAiInsight(keywords, iotData, geo) {
+      const wrap = document.getElementById('ai-insight-wrap');
+      const txt = document.getElementById('ai-insight-text');
+      wrap.style.display = 'block';
+      txt.textContent = '✨ AI 正在分析趨勢洞察，請稍候…';
+      try {
+        const res = await fetch('/api/trend-summary', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keywords, data: iotData, geo }),
+        });
+        const data = await res.json();
+        txt.textContent = data.summary || '（無法生成洞察）';
+      } catch (e) {
+        txt.textContent = '⚠️ AI 洞察暫時無法使用';
+      }
+    }
+
+    // ── HF AI Feature 2: 語意搜尋 ────────────────────────────
+    async function semanticSearch() {
+      const query = document.getElementById('semantic-query').value.trim();
+      if (!query) return;
+      const scenario = document.getElementById('disc-scenario')?.value || '';
+      const resultsEl = document.getElementById('semantic-results');
+      resultsEl.style.display = 'block';
+      resultsEl.innerHTML = '<span style="color:var(--text-secondary);font-size:12px">🔬 語意搜尋中…</span>';
+      try {
+        const params = new URLSearchParams({ query, scenario, top_k: 6 });
+        const res = await fetch(`/api/semantic-search?${params}`);
+        const data = await res.json();
+        const matches = data.matches || [];
+        if (!matches.length) {
+          resultsEl.innerHTML = '<span style="color:var(--muted);font-size:12px">找不到相似關鍵字</span>';
+          return;
+        }
+        resultsEl.innerHTML = `
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">語意相似關鍵字：</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;">
+            ${matches.map(m => `
+              <span style="padding:3px 10px;border-radius:99px;background:rgba(139,92,246,0.15);color:#c4b5fd;font-size:12px;border:1px solid rgba(139,92,246,0.25);"
+                title="相似度 ${(m.score * 100).toFixed(0)}%">
+                ${m.keyword} <span style="opacity:0.6;font-size:10px">${(m.score * 100).toFixed(0)}%</span>
+              </span>`).join('')}
+          </div>`;
+      } catch (e) {
+        resultsEl.innerHTML = '<span style="color:var(--rose);font-size:12px">⚠️ 搜尋失敗</span>';
+      }
+    }
+
+    // ── HF AI Feature 3: 場景分類 ─────────────────────────────
+    async function classifyKeyword(keyword, badgeEl) {
+      badgeEl.textContent = '分類中…';
+      try {
+        const res = await fetch(`/api/scenario-classify?keyword=${encodeURIComponent(keyword)}`);
+        const data = await res.json();
+        if (data.scenario) {
+          const pct = Math.round((data.confidence || 0) * 100);
+          const icons = { '旅遊': '✈️', '健康': '💪', '牙科': '🦷', '保健品': '💊' };
+          badgeEl.textContent = `${icons[data.scenario] || '📌'} ${data.scenario} ${pct}%`;
+          badgeEl.style.background = 'rgba(16,185,129,0.15)';
+          badgeEl.style.color = '#6ee7b7';
+        } else {
+          badgeEl.textContent = '';
+        }
+      } catch (e) {
+        badgeEl.textContent = '';
+      }
+    }
+
+    // ── HF AI Feature 4: AI 強化服務推測 ─────────────────────
+    async function aiEnhanceKeyword(keyword, scenario, servicesEl) {
+      servicesEl.innerHTML = '<span style="font-size:10px;color:var(--muted)">✨ AI 推測中…</span>';
+      try {
+        const params = new URLSearchParams({ keyword, scenario });
+        const res = await fetch(`/api/ai-services?${params}`);
+        const data = await res.json();
+        const svcs = data.services || [];
+        if (svcs.length) {
+          servicesEl.innerHTML = `<div class="service-tags">${svcs.map((s, i) =>
+            `<span class="service-tag${i === 0 ? ' primary' : ''}" style="border-color:rgba(139,92,246,0.4);color:#c4b5fd;background:rgba(139,92,246,0.15);">✨ ${s}</span>`
+          ).join('')}</div>`;
+        } else {
+          servicesEl.innerHTML = '<span style="font-size:10px;color:var(--muted)">（無結果）</span>';
+        }
+      } catch (e) {
+        servicesEl.innerHTML = '';
+      }
+    }
+
+    // ── 搜尋完成後自動觸發 AI 洞察 ────────────────────────────
+    const _origSearchBase = search;
+    search = async function () {
+      await _origSearchBase();
+      // 取最新的 IOT 資料和關鍵字
+      const kwList = document.getElementById('kw-input').value
+        .split(',').map(k => k.trim()).filter(Boolean).slice(0, 5);
+      const geo = document.getElementById('geo-select').value;
+      if (kwList.length > 0) {
+        // 延遲一點讓圖表資料先載入
+        setTimeout(async () => {
+          try {
+            const params = new URLSearchParams({
+              kw: kwList.join(','), geo,
+              timeframe: document.getElementById('time-select').value
+            });
+            const res = await fetch(`/api/interest-over-time?${params}`);
+            const iotData = await res.json();
+            loadAiInsight(kwList, iotData, geo);
+          } catch (e) { /* 靜默失敗 */ }
+        }, 500);
+      }
+    };
   </script>
 </body>
 

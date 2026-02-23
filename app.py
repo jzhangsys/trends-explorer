@@ -16,7 +16,13 @@ from flask import Flask, jsonify, request, render_template
 from pytrends.request import TrendReq
 from pytrends.exceptions import TooManyRequestsError
 from supabase import create_client, Client
-from keyword_discovery import run_discovery, list_scenarios
+from keyword_discovery import run_discovery, list_scenarios, SCENARIO_SEEDS
+from hf_services import (
+    suggest_services_ai,
+    classify_keyword_scenario,
+    semantic_keyword_search,
+    summarize_trends,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -277,6 +283,80 @@ def keyword_discovery():
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error("keyword-discovery error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: HF AI — 動態服務推測 ────────────────────────────────
+@app.route("/api/ai-services")
+def ai_services():
+    """HF LLM 為指定關鍵字生成對應服務/商品建議。"""
+    keyword = request.args.get("keyword", "").strip()
+    if not keyword:
+        return jsonify({"error": "請提供 keyword 參數"}), 400
+    scenario = request.args.get("scenario", "")
+    try:
+        services = suggest_services_ai(keyword, scenario)
+        return jsonify({"keyword": keyword, "services": services, "source": "ai"})
+    except Exception as e:
+        logger.error("ai-services error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: HF AI — 場景分類 ─────────────────────────────────────
+@app.route("/api/scenario-classify")
+def scenario_classify():
+    """用零樣本分類判斷關鍵字屬於哪個場景。"""
+    keyword = request.args.get("keyword", "").strip()
+    if not keyword:
+        return jsonify({"error": "請提供 keyword 參數"}), 400
+    try:
+        result = classify_keyword_scenario(keyword)
+        return jsonify(result)
+    except Exception as e:
+        logger.error("scenario-classify error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: HF AI — 語意關鍵字搜尋 ──────────────────────────────
+@app.route("/api/semantic-search")
+def semantic_search():
+    """計算 query 與種子關鍵字的語意相似度，回傳最近的 top_k 筆。"""
+    query = request.args.get("query", "").strip()
+    if not query:
+        return jsonify({"error": "請提供 query 參數"}), 400
+    scenario = request.args.get("scenario", "")
+    top_k = min(int(request.args.get("top_k", 5)), 10)
+
+    # 候選詞：指定場景的種子詞，或所有場景
+    if scenario and scenario in SCENARIO_SEEDS:
+        candidates = SCENARIO_SEEDS[scenario]
+    else:
+        candidates = [kw for kws in SCENARIO_SEEDS.values() for kw in kws]
+
+    try:
+        results = semantic_keyword_search(query, candidates, top_k=top_k)
+        return jsonify({"query": query, "matches": results})
+    except Exception as e:
+        logger.error("semantic-search error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API: HF AI — 趨勢洞察摘要 ────────────────────────────────
+@app.route("/api/trend-summary", methods=["POST"])
+def trend_summary():
+    """根據 IOT 資料用 LLM 生成趨勢洞察文字。"""
+    body = request.get_json(force=True, silent=True) or {}
+    keywords = body.get("keywords", [])
+    iot_data = body.get("data", {})
+    geo = body.get("geo", "TW")
+
+    if not keywords:
+        return jsonify({"error": "請提供 keywords 陣列"}), 400
+    try:
+        summary = summarize_trends(keywords, iot_data, geo)
+        return jsonify({"summary": summary})
+    except Exception as e:
+        logger.error("trend-summary error: %s", e)
         return jsonify({"error": str(e)}), 500
 
 
