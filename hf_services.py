@@ -61,7 +61,7 @@ def _cache_set(key: str, data):
 # ─────────────────────────────────────────────────────────────
 
 def _hf_post(model_id: str, payload: dict, timeout: int = 30) -> Optional[dict | list]:
-    """向 HF Inference API 發送 POST 請求。"""
+    """向 HF Inference API 發送 POST 請求（用於 pipeline 任務）。"""
     url = f"{HF_API_BASE}/{model_id}"
     headers = {"Authorization": f"Bearer {HF_TOKEN}", "Content-Type": "application/json"}
     try:
@@ -82,6 +82,34 @@ def _hf_post(model_id: str, payload: dict, timeout: int = 30) -> Optional[dict |
         return None
 
 
+def _hf_chat(system_prompt: str, user_prompt: str, max_tokens: int = 200, timeout: int = 40) -> str:
+    """
+    透過 HF router 的 OpenAI-compatible Chat Completions 端點呼叫 LLM。
+    正確 URL: https://router.huggingface.co/v1/chat/completions
+    """
+    url = "https://router.huggingface.co/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {HF_TOKEN}", "Content-Type": "application/json"}
+    payload = {
+        "model": "Qwen/Qwen2.5-72B-Instruct",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_prompt},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.4,
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data["choices"][0]["message"]["content"].strip()
+        else:
+            logger.warning("_hf_chat error %s: %s", resp.status_code, resp.text[:200])
+    except Exception as exc:
+        logger.error("_hf_chat failed: %s", exc)
+    return ""
+
+
 # ─────────────────────────────────────────────────────────────
 # 1. 動態服務/商品推測 (LLM)
 # ─────────────────────────────────────────────────────────────
@@ -89,9 +117,7 @@ def _hf_post(model_id: str, payload: dict, timeout: int = 30) -> Optional[dict |
 def suggest_services_ai(keyword: str, scenario: str = "") -> list[str]:
     """
     利用 LLM 為關鍵字生成 3 個對應的服務或商品名稱（繁體中文）。
-
-    Returns:
-        list[str] — 最多 3 個服務/商品名稱；失敗時回傳空 list
+    Returns: list[str] — 最多 3 個服務/商品名稱；失敗時回傳空 list
     """
     cache_key = f"suggest:{keyword}:{scenario}"
     cached = _cache_get(cache_key)
@@ -99,35 +125,19 @@ def suggest_services_ai(keyword: str, scenario: str = "") -> list[str]:
         return cached
 
     scenario_hint = f"（場景：{scenario}）" if scenario else ""
-    prompt = (
-        f"<|im_start|>system\n你是台灣市場行銷專家，請用繁體中文回答。<|im_end|>\n"
-        f"<|im_start|>user\n"
+    system = "你是台灣市場行銷專家，請用繁體中文回答。"
+    user = (
         f"關鍵字「{keyword}」{scenario_hint} 在 Google 上被大量搜尋。"
         f"請列出消費者搜尋這個關鍵字時，最可能想要找的 3 個具體服務或商品名稱。"
-        f"只輸出 JSON 陣列，例如：[\"服務A\",\"服務B\",\"服務C\"]，不要其他說明。"
-        f"<|im_end|>\n<|im_start|>assistant\n"
+        f'只輸出 JSON 陣列，例如：["服務A","服務B","服務C"]，不要其他說明。'
     )
 
-    result = _hf_post(
-        MODELS["llm"],
-        {
-            "inputs": prompt,
-            "parameters": {
-                "max_new_tokens": 80,
-                "temperature": 0.3,
-                "return_full_text": False,
-            },
-        },
-        timeout=30,
-    )
-
+    text = _hf_chat(system, user, max_tokens=80, timeout=35)
     services: list[str] = []
     try:
-        if result and isinstance(result, list):
-            text = result[0].get("generated_text", "")
-            # 提取 JSON 陣列
+        if text:
             start = text.find("[")
-            end = text.rfind("]") + 1
+            end   = text.rfind("]") + 1
             if start != -1 and end > start:
                 services = json.loads(text[start:end])
                 services = [str(s).strip() for s in services if s][:3]
@@ -273,14 +283,7 @@ def semantic_keyword_search(query: str, candidates: list[str], top_k: int = 5) -
 def summarize_trends(keywords: list[str], iot_data: dict, geo: str = "TW") -> str:
     """
     根據 Interest Over Time 資料生成繁體中文趨勢洞察摘要。
-
-    Args:
-        keywords: 查詢的關鍵字列表
-        iot_data: /api/interest-over-time 回傳的資料
-        geo:      地區代碼
-
-    Returns:
-        str — 2-3 句的中文趨勢洞察，失敗時回傳空字串
+    Returns: str — 2-3 句的中文趨勢洞察，失敗時回傳空字串
     """
     cache_key = f"summary:{','.join(keywords)}:{geo}"
     cached = _cache_get(cache_key)
@@ -292,49 +295,31 @@ def summarize_trends(keywords: list[str], iot_data: dict, geo: str = "TW") -> st
     data_desc_parts = []
     for ds in datasets:
         label = ds.get("label", "")
-        data = ds.get("data", [])
+        data  = ds.get("data", [])
         if data:
-            avg = round(sum(data) / len(data), 1)
+            avg  = round(sum(data) / len(data), 1)
             peak = max(data)
             data_desc_parts.append(f"{label}（平均聲量={avg}，峰值={peak}）")
     data_desc = "；".join(data_desc_parts) if data_desc_parts else "數據不足"
 
-    geo_map = {"TW": "台灣", "US": "美國", "JP": "日本", "": "全球"}
+    geo_map  = {"TW": "台灣", "US": "美國", "JP": "日本", "": "全球"}
     geo_name = geo_map.get(geo, geo)
 
-    prompt = (
-        f"<|im_start|>system\n你是數位行銷分析師，請用繁體中文回答，語氣專業簡潔。<|im_end|>\n"
-        f"<|im_start|>user\n"
+    system = "你是數位行銷分析師，請用繁體中文回答，語氣專業簡潔。"
+    user   = (
         f"以下是 {geo_name} Google Trends 資料（近期）：{data_desc}。"
-        f"請用 2-3 句話說明這些關鍵字的搜尋趨勢洞察，並給出一個行銷建議。"
-        f"<|im_end|>\n<|im_start|>assistant\n"
+        f"請用 2-3 句話說明這些關鍵字的搜尋趨勢洞察，並給出一個具體行銷建議。"
     )
 
-    result = _hf_post(
-        MODELS["llm"],
-        {
-            "inputs": prompt,
-            "parameters": {
-                "max_new_tokens": 150,
-                "temperature": 0.5,
-                "return_full_text": False,
-            },
-        },
-        timeout=35,
-    )
+    summary = _hf_chat(system, user, max_tokens=180, timeout=45)
 
-    summary = ""
-    try:
-        if result and isinstance(result, list):
-            summary = result[0].get("generated_text", "").strip()
-            # 截斷到第一個自然結尾
-            for end_mark in ["。\n", "。", "\n\n"]:
-                idx = summary.rfind(end_mark)
-                if idx > 20:
-                    summary = summary[:idx + len(end_mark)].strip()
-                    break
-    except Exception as exc:
-        logger.warning("summarize_trends parse error: %s", exc)
+    # 截斷到自然結尾
+    if summary:
+        for end_mark in ["。\n", "。", "\n\n"]:
+            idx = summary.rfind(end_mark)
+            if idx > 20:
+                summary = summary[:idx + len(end_mark)].strip()
+                break
 
     _cache_set(cache_key, summary)
     return summary
