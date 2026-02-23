@@ -174,19 +174,24 @@ def classify_keyword_scenario(keyword: str) -> dict:
 
     output = {"scenario": "", "confidence": 0.0, "all_scores": {}}
     try:
-        if result and "labels" in result and "scores" in result:
-            # 反查中文場景名稱
+        # 新版 router 回傳格式： [{"label": ..., "score": ...}, ...]
+        if result and isinstance(result, list) and len(result) > 0:
             en_to_zh = {v: k for k, v in SCENARIO_LABELS_ZH.items()}
-            all_scores = {
-                en_to_zh.get(lbl, lbl): round(score, 4)
-                for lbl, score in zip(result["labels"], result["scores"])
-            }
-            top_en = result["labels"][0]
-            output = {
-                "scenario": en_to_zh.get(top_en, top_en),
-                "confidence": round(result["scores"][0], 4),
-                "all_scores": all_scores,
-            }
+            # 第一層可能是嵌套 list（[[...]])或就是 [...])
+            items = result[0] if isinstance(result[0], list) else result
+            if items and isinstance(items[0], dict) and "label" in items[0]:
+                # 排庋（router 已排，但保险）
+                items_sorted = sorted(items, key=lambda x: x.get("score", 0), reverse=True)
+                all_scores = {
+                    en_to_zh.get(item["label"], item["label"]): round(item.get("score", 0), 4)
+                    for item in items_sorted
+                }
+                top_label = items_sorted[0]["label"]
+                output = {
+                    "scenario": en_to_zh.get(top_label, top_label),
+                    "confidence": round(items_sorted[0].get("score", 0), 4),
+                    "all_scores": all_scores,
+                }
     except Exception as exc:
         logger.warning("classify_keyword_scenario parse error: %s", exc)
 
@@ -209,14 +214,26 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 def _get_embedding(texts: list[str]) -> Optional[list[list[float]]]:
-    """取得句子嵌入向量。"""
-    result = _hf_post(
-        MODELS["embedding"],
-        {"inputs": texts},
-        timeout=20,
-    )
-    if result and isinstance(result, list) and len(result) > 0:
-        return result
+    """取得句子嵌入向量（router 版需要 /pipeline/feature-extraction 後綴）。"""
+    model_id = MODELS["embedding"]
+    url = f"{HF_API_BASE}/{model_id}/pipeline/feature-extraction"
+    headers = {"Authorization": f"Bearer {HF_TOKEN}", "Content-Type": "application/json"}
+    try:
+        resp = requests.post(url, headers=headers, json={"inputs": texts}, timeout=20)
+        if resp.status_code == 200:
+            result = resp.json()
+            if isinstance(result, list) and len(result) > 0:
+                return result
+        elif resp.status_code == 503:
+            logger.warning("HF embedding model loading, waiting 10s…")
+            time.sleep(10)
+            resp = requests.post(url, headers=headers, json={"inputs": texts}, timeout=20)
+            if resp.status_code == 200:
+                return resp.json()
+        else:
+            logger.warning("HF embedding error %s: %s", resp.status_code, resp.text[:200])
+    except Exception as exc:
+        logger.error("HF embedding request failed: %s", exc)
     return None
 
 
